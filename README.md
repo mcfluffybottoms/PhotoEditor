@@ -1,2 +1,2 @@
 Init data
-dog
+dog cat
