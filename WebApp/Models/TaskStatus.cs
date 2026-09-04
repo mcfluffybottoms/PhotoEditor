@@ -1,10 +1,9 @@
 
 namespace PhotoEditor.Models;
 
-public enum RunTaskStatus
+public enum ImageTaskStatus
 {
     CREATED,
-    PROCESSING,
     FAILED,
     COMPLETED
 }

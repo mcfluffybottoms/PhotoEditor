@@ -1,7 +1,7 @@
 using PhotoEditor.Models;
 
-namespace PhotoEditor.Dtos;
+namespace PhotoEditor.DTOs;
 
 public record StatusResponseDto(
-    RunTaskStatus Status
+    ImageTaskStatus Status
 );
