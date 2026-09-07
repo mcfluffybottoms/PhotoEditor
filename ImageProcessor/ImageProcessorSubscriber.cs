@@ -11,7 +11,7 @@ public class ImageProcessorSubscriber : IAsyncDisposable
 {
     // ----- CONSUMER CONFIG ----- //
     private const string ExchangeName = "EditorExchange";
-    private const string ContainerId = "photo-editor";
+    private const string ContainerId = "photo-editor-worker";
     private const string RequestQueueName = "ImageEditorRequestQueue";
     IResponder? _responder;
     IEnvironment? _environment;
@@ -26,22 +26,6 @@ public class ImageProcessorSubscriber : IAsyncDisposable
 
         _environment = AmqpEnvironment.Create(settings);
         _connection = await _environment.CreateConnectionAsync();
-
-        IManagement management = _connection.Management();
-
-        IExchangeSpecification exchangeSpec = management.Exchange(ExchangeName).Type("fanout");
-        await exchangeSpec.DeclareAsync();
-
-        IQueueSpecification requestQueue = management.Queue(RequestQueueName);
-        await requestQueue.DeclareAsync();
-
-        IBindingSpecification bindSpec = management
-            .Binding()
-            .SourceExchange(exchangeSpec)
-            .DestinationQueue(RequestQueueName)
-            .Key(string.Empty);
-
-        await bindSpec.BindAsync();
 
         _responder = await _connection
             .ResponderBuilder()
@@ -74,13 +58,7 @@ public class ImageProcessorSubscriber : IAsyncDisposable
                 });
             }
 
-            string resultPath = await SendAsync(options);
-            return CreateResponse(new AcceptTaskResult
-            {
-                Uuid = options.Uuid,
-                Accepted = true,
-                ResultPath = resultPath
-            });
+            return await SendAsync(options);
         }
         catch (Exception e)
         {
@@ -91,14 +69,18 @@ public class ImageProcessorSubscriber : IAsyncDisposable
             });
         }
     }
-    private static AmqpMessage CreateResponse(AcceptTaskResult result)
-    {
-        string json = JsonSerializer.Serialize(result);
-        return new AmqpMessage(Encoding.UTF8.GetBytes(json));
-    }
-    private static async Task<string> SendAsync(TaskOptions options)
+    private static async Task<AmqpMessage> SendAsync(TaskOptions options)
     {
         var result = await ImageOperations.Process(options);
+        if (!result.IsProcessed)
+        {
+            return CreateResponse(new AcceptTaskResult
+            {
+                Uuid = options.Uuid,
+                Accepted = false,
+                Error = result.Error
+            });
+        }
 
         var filename = options.Filename;
         if (filename is null)
@@ -109,8 +91,31 @@ public class ImageProcessorSubscriber : IAsyncDisposable
             } while (File.Exists($"{filename}.png"));
         }
         string path = $"{filename}.png";
-        result.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-        return path;
+
+        try
+        {
+            result.Image!.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            return CreateResponse(new AcceptTaskResult
+            {
+                Uuid = options.Uuid,
+                Accepted = true,
+                ResultPath = path
+            });
+        } catch (Exception e)
+        {
+            return CreateResponse(new AcceptTaskResult
+            {
+                Uuid = options.Uuid,
+                Accepted = false,
+                Error = e.Message
+            });
+        }
+    }
+    private static AmqpMessage CreateResponse(AcceptTaskResult result)
+    {
+        string json = JsonSerializer.Serialize(result);
+        Console.WriteLine(json);
+        return new AmqpMessage(Encoding.UTF8.GetBytes(json));
     }
     public async ValueTask DisposeAsync()
     {

@@ -23,7 +23,25 @@ static void AddAuthServices(WebApplicationBuilder builder)
 
 static void AddImageTaskService(WebApplicationBuilder builder)
 {
-    builder.Services.AddScoped<ImageTaskScheduler>();
+    builder.Services.AddSingleton<ImageTaskScheduler>();
+
+    var repositorySettings = builder.Configuration.GetSection("Repository");
+    if (repositorySettings["TaskStorageType"] == "InMemory")
+    {
+        builder.Services.AddSingleton<IImageTaskRepository, InMemoryImageTaskRepository>();
+    }
+    else
+    {
+        throw new InvalidOperationException($"Unsupported repository type: '{repositorySettings["Type"]}'");
+    }
+    if (repositorySettings["FileStorageType"] == "InMemory")
+    {
+        builder.Services.AddSingleton<IFileStorageRepository, InMemoryFileStorageRepository>();
+    }
+    else
+    {
+        throw new InvalidOperationException($"Unsupported repository type: '{repositorySettings["Type"]}'");
+    }
 }
 
 static void AddCache(WebApplicationBuilder builder)
@@ -94,5 +112,16 @@ app.UseSession();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+const string brokerUri = "amqp://guest:guest@localhost:5672/%2f";
+var scheduler = app.Services.GetService<ImageTaskScheduler>();
+if (scheduler is not null)
+{
+    await scheduler.InitAsync(brokerUri);
+} else
+{
+    await app.DisposeAsync();
+    Environment.Exit(1);
+}
 
 app.Run();

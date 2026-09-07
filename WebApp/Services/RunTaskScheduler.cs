@@ -8,11 +8,11 @@ using System.Text;
 
 namespace PhotoEditor.Services;
 
-public class ImageTaskScheduler(IImageTaskRepository repo) : IAsyncDisposable
+public class ImageTaskScheduler(IImageTaskRepository repo, IFileStorageRepository fileRepo) : IAsyncDisposable
 {
     // ----- PUBLISHER CONFIG ----- //
     private const string ExchangeName = "EditorExchange";
-    private const string ContainerId = "photo-editor";
+    private const string ContainerId = "photo-editor-api";
     private const string RequestQueueName = "ImageEditorRequestQueue";
     IRequester? _requester;
     IEnvironment? _environment;
@@ -35,37 +35,22 @@ public class ImageTaskScheduler(IImageTaskRepository repo) : IAsyncDisposable
         _environment = AmqpEnvironment.Create(settings);
         _connection = await _environment.CreateConnectionAsync();
 
-        IManagement management = _connection.Management();
-
-        IExchangeSpecification exchangeSpec = management.Exchange(ExchangeName).Type("fanout");
-        await exchangeSpec.DeclareAsync();
-
-        IQueueSpecification requestQueue = management.Queue(RequestQueueName);
-        await requestQueue.DeclareAsync();
-
-        IBindingSpecification bindSpec = management
-            .Binding()
-            .SourceExchange(exchangeSpec)
-            .DestinationQueue(RequestQueueName)
-            .Key(string.Empty);
-
-        await bindSpec.BindAsync();
         _requester = await _connection
             .RequesterBuilder()
             .RequestAddress()
-            .Exchange(ExchangeName)
+            .Queue(RequestQueueName)
             .Requester()
             .BuildAsync();
     }
 
-    public async Task<(CreateTaskResult, ImageTask?)> LoadTaskAsync(TaskOptions options)
+    public async Task<(CreateTaskResult, ImageTask?)> LoadTaskAsync(FileUploadDto options)
     {
         if (_requester is null)
         {
-            throw new InvalidOperationException("RunTashScheduler is not initialized.");
+            throw new InvalidOperationException("RunTaskScheduler is not initialized.");
         }
 
-        var task = new ImageTask
+        var task = new ImageTask // TODO ADD MORE INFO ON TASK
         {
             Uuid = Guid.NewGuid(),
             Status = ImageTaskStatus.CREATED,
@@ -78,7 +63,18 @@ public class ImageTaskScheduler(IImageTaskRepository repo) : IAsyncDisposable
             return (CreateTaskResult.CONFLICT, null);
         }
 
-        var optionsJson = JsonSerializer.Serialize(options);
+        var path = await fileRepo.StoreFile(options.Image, options.NewFilename);
+        if (path is null)
+        {
+            return (CreateTaskResult.DENIED, null);
+        }
+        var optionsJson = JsonSerializer.Serialize(new TaskOptions
+        {
+            Uuid = task.Uuid.ToString(),
+            ImagePath = path,
+            Filename = options.NewFilename,
+            Parameters = options.Parameters
+        });
         IMessage message = new AmqpMessage(Encoding.UTF8.GetBytes(optionsJson));
         IMessage reply = await _requester.PublishAsync(message);
         return await ProcessReply(task, reply);
@@ -88,7 +84,7 @@ public class ImageTaskScheduler(IImageTaskRepository repo) : IAsyncDisposable
     {
         string json = Encoding.UTF8.GetString(reply.Body()!);
         AcceptTaskResult? result = JsonSerializer.Deserialize<AcceptTaskResult>(json)
-        ?? throw new InvalidOperationException($"{nameof(ProcessReply)} received an invalid response.");
+            ?? throw new InvalidOperationException($"{nameof(ProcessReply)} received an invalid response.");
         if (result.Accepted)
         {
             task.Status = ImageTaskStatus.COMPLETED;

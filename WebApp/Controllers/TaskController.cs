@@ -13,7 +13,7 @@ namespace PhotoEditor.Controllers;
 public class TaskController(ImageTaskScheduler scheduler) : ControllerBase
 {
     [HttpPost("task")]
-    public async Task<IActionResult> LoadTask(TaskOptions options)
+    public async Task<IActionResult> LoadTask([FromForm] FileUploadDto options)
     {
         var (status, task) = await scheduler.LoadTaskAsync(options);
         return status switch
